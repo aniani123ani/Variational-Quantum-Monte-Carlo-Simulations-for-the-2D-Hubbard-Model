@@ -1,0 +1,98 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.linalg import expm, det
+from numba import jit
+
+# Parameters
+L = 4  # Lattice size (LxL)
+U = 4  # Onsite interaction strength
+t = 1  # Hopping amplitude
+beta = 4  # Inverse temperature
+N_tau = 10  # Number of time slices
+delta_tau = beta / N_tau
+iterations = 1000  # Monte Carlo steps
+
+# Initialize auxiliary field (Hubbard-Stratonovich)
+def initialize_auxiliary_field():
+    return np.random.choice([-1, 1], size=(L, L, N_tau))
+
+# Create hopping matrix for 2D square lattice with periodic boundary conditions
+@jit(nopython=True)
+def hopping_matrix(L, t):
+    H = np.zeros((L*L, L*L))
+    for i in range(L):
+        for j in range(L):
+            site = i * L + j
+            neighbors = [
+                ((i+1) % L) * L + j, ((i-1) % L) * L + j, 
+                i * L + (j+1) % L, i * L + (j-1) % L
+            ]
+            for n in neighbors:
+                H[site, n] = -t
+    return H
+
+# Compute the fermionic Green's function (Optimized)
+def compute_green_function(aux_field, H, U, delta_tau):
+    lambda_hs = np.arccosh(np.exp(0.5 * U * delta_tau))
+    B = np.eye(L * L)
+
+    for t in range(N_tau):
+        V = np.diag(np.exp(lambda_hs * aux_field[:, :, t].flatten()))
+        B = B @ expm(-delta_tau * (H + V))
+
+    return np.linalg.inv(np.eye(L*L) + B)  # Green's function
+
+# Monte Carlo update using Sherman-Morrison formula
+def monte_carlo_step(aux_field, H, U, delta_tau):
+    i, j, t = np.random.randint(0, L, 3)  # Pick a random site and time slice
+    s_old = aux_field[i, j, t]
+    aux_field[i, j, t] *= -1  # Flip the auxiliary field
+
+    G = compute_green_function(aux_field, H, U, delta_tau)
+
+    # Correct Metropolis-Hastings probability
+    delta_S = -2 * U * delta_tau * aux_field[i, j, t]
+    P = min(1, np.exp(delta_S))  # Use exp(ΔS) instead of determinant
+
+    if np.random.rand() > P:
+        aux_field[i, j, t] = s_old  # Reject move
+
+# Compute observables: Energy and Double Occupancy
+def compute_observables(aux_field, H, U, delta_tau):
+    G = compute_green_function(aux_field, H, U, delta_tau)
+    energy = -np.trace(H @ G) / (L*L)
+    double_occ = np.mean((1 - np.diag(G))**2)
+    return energy, double_occ
+
+# Main simulation
+def dqmc_simulation(iterations=1000):
+    aux_field = initialize_auxiliary_field()
+    H = hopping_matrix(L, t)
+    energies = []
+    double_occ_list = []
+
+    for _ in range(iterations):
+        monte_carlo_step(aux_field, H, U, delta_tau)
+        energy, double_occ = compute_observables(aux_field, H, U, delta_tau)
+        energies.append(energy)
+        double_occ_list.append(double_occ)
+
+    return energies, double_occ_list
+
+# Run simulation
+energies, double_occ_list = dqmc_simulation()
+
+# Plot results
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.plot(energies, label='Energy per site')
+plt.xlabel('Monte Carlo Steps')
+plt.ylabel('Energy')
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(double_occ_list, label='Double Occupancy')
+plt.xlabel('Monte Carlo Steps')
+plt.ylabel('Double Occupancy')
+plt.legend()
+plt.show()
